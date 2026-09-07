@@ -77,9 +77,9 @@ class WaferFusionCascade:
         eligible_mask = create_eligible_mask(df_raw).values
         
         # Initialize output arrays
-        p_a_calib = np.zeros(n, dtype=np.float32)
-        p_b_calib = np.full(n, np.nan, dtype=np.float32)
-        final_probs = np.zeros(n, dtype=np.float32)
+        p_a_calib = np.zeros(n, dtype=np.float64)
+        p_b_calib = np.full(n, np.nan, dtype=np.float64)
+        final_probs = np.zeros(n, dtype=np.float64)
         uncertainty_states = np.full(n, "OLD_FAILURE", dtype=object)
         routed_to_b = np.zeros(n, dtype=bool)
         
@@ -110,6 +110,10 @@ class WaferFusionCascade:
                     spatial_features=X_tab_elig,
                     threshold=self.threshold
                 )
+            # A tuned threshold can disagree with a singleton set. Never
+            # bypass Model B while making the opposite conformal decision.
+            to_route |= ((conf_states == "CONFIDENT_PASS") & (cal_p_a >= self.threshold))
+            to_route |= ((conf_states == "CONFIDENT_FAIL") & (cal_p_a < self.threshold))
             routed_to_b[elig_indices] = to_route & (self.model_b is not None)
             
             # Dies resolved purely by Model A

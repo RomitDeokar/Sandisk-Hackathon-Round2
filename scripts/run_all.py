@@ -63,7 +63,7 @@ def main():
         logger.info("OOF operating-point comparison (no retraining):\n%s", comparison_table(records).to_string(index=False))
         logger.info("Submission and model artifacts unchanged. Objective selection uses OOF labels, not test labels.")
         return
-    resolve_data_paths(cfg, args, parser)
+    resolve_data_paths(cfg, args, parser, required=("train",))
     seed = cfg.get("seed", 42)
     seed_everything(seed)
     train_df = load_dataset(Path(cfg["paths"]["raw_train"]), split_name="train")

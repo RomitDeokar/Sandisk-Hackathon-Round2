@@ -6,7 +6,7 @@ from sandisk_yield.data.alignment import assert_feature_alignment, assert_row_al
 from sandisk_yield.data.splitter import make_grouped_folds
 from sandisk_yield.features.pipeline import FeaturePipeline
 from sandisk_yield.features.blocks import (compute_block_features_df,
-    compress_block_readings_global, compress_block_readings_zonal)
+    compress_block_readings_global, compress_block_readings_zonal, compress_block_readings_stats)
 from sandisk_yield.models.model_a import ModelA
 from sandisk_yield.models.model_b import WaferBlockDataset
 from sandisk_yield.training.trainer_b import train_model_b
@@ -25,9 +25,9 @@ class BlockFeatureModel:
     LightGBM over tabular + summary features. Thus comparisons include the
     downstream learner change, not only a controlled encoder ablation.
     """
-    def __init__(self, mode="cnn", block_length=2000, model_params=None, training_params=None,
+    def __init__(self, mode="stats", block_length=2000, model_params=None, training_params=None,
                  model_type="lightgbm"):
-        if mode not in {"cnn", "global", "zonal"}:
+        if mode not in {"cnn", "global", "zonal", "stats"}:
             raise ValueError("Unknown block mode")
         self.mode, self.block_length = mode, block_length
         self.model_params, self.training_params = model_params, training_params or {}
@@ -35,7 +35,7 @@ class BlockFeatureModel:
 
     def block_features(self, raw):
         func = {"cnn": compute_block_features_df, "global": compress_block_readings_global,
-                "zonal": compress_block_readings_zonal}[self.mode]
+                "zonal": compress_block_readings_zonal, "stats": compress_block_readings_stats}[self.mode]
         return func(raw, expected_len=self.block_length)
 
     def fit(self, X, raw, y):
@@ -83,9 +83,11 @@ class BlockFeatureModel:
         return self.model.predict_proba(pd.concat([X, blocks], axis=1))
 
 
-def train_models_cv(df, modes=("cnn",), feature_params=None, model_params=None,
+def train_models_cv(df, modes=("stats",), feature_params=None, model_params=None,
                     training_params=None, block_length=2000, n_splits=5, seed=42,
                     model_type="lightgbm"):
+    if (feature_params or {}).get("include_blocks", False):
+        raise ValueError("Model A cannot use block readings; set include_blocks=False")
     y_all, eligible = create_new_failure_target(df)
     assert_row_alignment(df, y_all, eligible)
     assert df["wafer_id"].notna().all(), "Missing wafer IDs"

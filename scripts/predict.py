@@ -5,6 +5,7 @@ Inference CLI script for predicting on any custom raw dataset.
 """
 
 import argparse
+import json
 import sys
 from pathlib import Path
 import joblib
@@ -31,6 +32,7 @@ def main():
     parser.add_argument("--output", type=str, default="outputs/predictions/submission.csv", help="Submission output path")
     parser.add_argument("--mode", type=str, default="cascade", choices=["cascade", "full_model_b"])
     add_operating_arguments(parser)
+    parser.set_defaults(threshold_objective=None, fn_fp_cost_ratio=None)
     parser.add_argument("--from-probabilities", default=None,
                         help="Re-threshold saved predictions without model inference")
     parser.add_argument("--oof", default=None, help="OOF CSV for threshold tuning; never supply test predictions here")
@@ -43,23 +45,27 @@ def main():
     cfg = load_config(args.config)
     resolve_data_paths(cfg, args, parser, required=())
     args.input = args.input or cfg["paths"]["raw_validation"]
-    if not np.isfinite(args.fn_fp_cost_ratio) or args.fn_fp_cost_ratio <= 0:
+    if args.fn_fp_cost_ratio is not None and (not np.isfinite(args.fn_fp_cost_ratio) or args.fn_fp_cost_ratio <= 0):
         parser.error("--fn-fp-cost-ratio must be positive and finite")
     require_input_files(parser, [args.from_probabilities or args.input])
     models_dir = Path(cfg["paths"]["models_dir"])
     artifacts_dir = Path(cfg["paths"]["artifacts_dir"])
 
-    cascade = joblib.load(models_dir / "cascade_orchestrator.joblib")
-    # Saved OOF scores use raw probability scales. Do not apply those thresholds
-    # to older artifacts whose calibrators transform the probabilities.
-    if any(getattr(c, "is_fitted", False) for c in (cascade.calibrator_a, cascade.calibrator_b)):
-        parser.error("OOF threshold tuning requires artifacts with uncalibrated probability scales")
-    oof_path = args.oof or str(Path(cfg["paths"]["predictions_dir"]) / "oof_predictions.csv")
-    require_input_files(parser, [oof_path])
-    policy = tune_policy(pd.read_csv(oof_path), args.threshold_objective, args.fn_fp_cost_ratio)
-    b_name = f"Model B ({getattr(cascade.model_b, 'mode', 'cnn')})"
-    cascade.threshold = policy["thresholds"]["Model A"]
-    cascade.threshold_b = policy["thresholds"][b_name]
+    policy_path = models_dir / "operating_policy.json"
+    retune = args.oof is not None or args.threshold_objective is not None or args.fn_fp_cost_ratio is not None
+    if policy_path.exists() and not retune:
+        policy = json.loads(policy_path.read_text(encoding="utf-8"))
+    else:
+        oof_path = args.oof or str(Path(cfg["paths"]["predictions_dir"]) / "oof_predictions.csv")
+        require_input_files(parser, [oof_path])
+        policy = tune_policy(pd.read_csv(oof_path), args.threshold_objective or "f1",
+                             args.fn_fp_cost_ratio if args.fn_fp_cost_ratio is not None else 8.0)
+    cascade = None
+    if "model_b_name" in policy:
+        b_name = policy["model_b_name"]
+    else:
+        cascade = joblib.load(models_dir / "cascade_orchestrator.joblib")
+        b_name = f"Model B ({getattr(cascade.model_b, 'mode', 'cnn')})"
     if args.from_probabilities:
         ref_df = pd.read_csv(args.from_probabilities)
         try:
@@ -70,6 +76,12 @@ def main():
                           probabilities_path=str(probability_output))
         logger.info("Exported selected OOF policy without inference or retraining: %s", args.output)
         return
+    if cascade is None:
+        cascade = joblib.load(models_dir / "cascade_orchestrator.joblib")
+    if any(getattr(c, "is_fitted", False) for c in (cascade.calibrator_a, cascade.calibrator_b)):
+        parser.error("Raw-scale OOF policies cannot be applied to probability-calibrated artifacts")
+    cascade.threshold = policy["thresholds"]["Model A"]
+    cascade.threshold_b = policy["thresholds"][b_name]
     # Training now saves preprocessing beside the models; retain legacy lookup.
     pipeline_path = models_dir / "feature_pipeline.joblib"
     if not pipeline_path.exists():

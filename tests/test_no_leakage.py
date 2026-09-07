@@ -74,3 +74,45 @@ def test_calibration_split_zero_wafer_overlap(synthetic_wafer_df):
     fit_wafers = set(fit_df["wafer_id"])
     calib_wafers = set(calib_df["wafer_id"])
     assert len(fit_wafers.intersection(calib_wafers)) == 0
+
+
+@pytest.mark.parametrize("ratio", [0, 1, -0.1, np.nan])
+def test_calibration_ratio_validation(synthetic_wafer_df, ratio):
+    with pytest.raises(ValueError):
+        make_calibration_split(synthetic_wafer_df, calibration_ratio=ratio)
+
+
+def test_blocks_cannot_leak_into_model_a(synthetic_wafer_df):
+    from sandisk_yield.training.cross_validation import train_models_cv
+    with pytest.raises(ValueError, match="cannot use block"):
+        train_models_cv(synthetic_wafer_df, feature_params={"include_blocks": True})
+
+
+def test_pipeline_transform_ignores_outcomes_and_block_readings(synthetic_wafer_df):
+    df = synthetic_wafer_df.copy()
+    y, eligible = create_new_failure_target(df)
+    pipeline = FeaturePipeline(top_k_parametric=2).fit(df.loc[eligible], y.loc[eligible])
+    before = pipeline.transform(df)
+    df["label"] = 1 - df.label
+    df["block_readings"] = "invalid unused expensive measurements"
+    pd.testing.assert_frame_equal(before, pipeline.transform(df))
+
+
+def test_production_validator_checks_late_blocks_and_ids():
+    from sandisk_yield.data.validator import validate_dataframe, ValidationError
+    df = pd.DataFrame({"wafer_id": ["w"] * 60, "die_row": range(60), "die_col": [0] * 60,
+                       "old_label": [0] * 60, "label": [0] * 60, "feature_1": np.arange(60),
+                       "block_readings": ["1 2 3 4"] * 60})
+    assert validate_dataframe(df, expected_block_length=4)["status"] == "VALID"
+    corrupt = df.copy()
+    corrupt.loc[59, "block_readings"] = "1 2"
+    with pytest.raises(ValidationError, match="row 59"):
+        validate_dataframe(corrupt, expected_block_length=4)
+    with pytest.raises(ValidationError, match="Duplicate die"):
+        validate_dataframe(pd.concat([df, df.iloc[:1]], ignore_index=True), expected_block_length=4)
+    with pytest.raises(ValidationError, match="Missing block"):
+        validate_dataframe(df.drop(columns="block_readings"), expected_block_length=4)
+    corrupt = df.copy()
+    corrupt.loc[0, "die_row"] = -1
+    with pytest.raises(ValidationError, match="nonnegative"):
+        validate_dataframe(corrupt, expected_block_length=4)

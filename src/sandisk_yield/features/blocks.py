@@ -14,21 +14,16 @@ def parse_block_readings_row(val: Union[str, list, np.ndarray], expected_len: in
     """
     Parses string, list, or array of block readings into float32 ndarray.
     """
-    if isinstance(val, np.ndarray):
-        arr = val.astype(np.float32)
-    elif isinstance(val, list):
-        arr = np.array(val, dtype=np.float32)
-    elif isinstance(val, str):
-        arr = np.fromstring(val, dtype=np.float32, sep=" ")
-    else:
-        arr = np.zeros(expected_len, dtype=np.float32)
-        
-    if len(arr) != expected_len and expected_len > 0:
-        if len(arr) < expected_len:
-            pad = np.zeros(expected_len - len(arr), dtype=np.float32)
-            arr = np.concatenate([arr, pad])
-        else:
-            arr = arr[:expected_len]
+    if not isinstance(val, (str, list, tuple, np.ndarray)):
+        raise ValueError("Block readings must be a whitespace-delimited string or numeric vector")
+    try:
+        arr = np.asarray(val.split() if isinstance(val, str) else val, dtype=np.float32)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Block readings contain invalid numeric tokens") from exc
+    if arr.ndim != 1 or not arr.size or not np.isfinite(arr).all():
+        raise ValueError("Block readings must be a nonempty finite one-dimensional vector")
+    if expected_len > 0 and arr.size != expected_len:
+        raise ValueError(f"Expected {expected_len} block readings, received {arr.size}")
     return arr
 
 
@@ -171,3 +166,23 @@ def compute_block_features_df(
         records.append(extract_block_anomaly_features(arr))
         
     return pd.DataFrame(records, index=df.index)
+
+
+def compress_block_readings_stats(df, expected_len=2000):
+    """Compact tail/shape and localized statistics for the CPU LightGBM resolver.
+
+    Unlike the five-feature legacy global baseline, retain sparse defect shape.
+    All summaries are within a die; no labels or cross-wafer fitting are used.
+    """
+    records = []
+    for value in df["block_readings"]:
+        arr = parse_block_readings_row(value, expected_len).astype(np.float64)
+        row = extract_block_anomaly_features(arr)
+        centered = arr - arr.mean()
+        variance = np.mean(centered ** 2)
+        z = centered / np.sqrt(variance) if variance > 1e-12 else np.zeros_like(arr)
+        row.update(blk_variance=variance, blk_skew=np.mean(z ** 3),
+                   blk_kurtosis=np.mean(z ** 4) - 3 if variance > 1e-12 else 0.0,
+                   blk_mad=np.median(np.abs(arr - np.median(arr))))
+        records.append(row)
+    return pd.DataFrame(records, index=df.index, dtype=np.float32)

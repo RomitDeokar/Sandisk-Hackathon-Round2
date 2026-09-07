@@ -51,6 +51,10 @@ def make_calibration_split(
     """
     Splits DataFrame into fit_df and calib_df by wafer_id.
     """
+    if group_col not in df or df[group_col].isna().any():
+        raise ValueError("Calibration requires nonmissing wafer IDs")
+    if not 0 < calibration_ratio < 1 or df[group_col].nunique() < 2:
+        raise ValueError("Calibration requires at least two wafers and a ratio in (0, 1)")
     unique_wafers = df[group_col].unique()
     rng = np.random.default_rng(seed)
     shuffled_wafers = rng.permutation(unique_wafers)

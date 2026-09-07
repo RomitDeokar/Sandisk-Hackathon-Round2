@@ -1,0 +1,61 @@
+# Python bytecode & cache
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Virtual environments
+venv/
+.venv/
+.venv-gpu/
+env/
+
+# Large model binaries & raw cache
+*.pt
+*.pth
+*.ckpt
+*.onnx
+*.joblib
+*.pkl
+*.pickle
+data/raw/
+data/processed/
+data/features/
+data/artifacts/
+# Frozen models are reproducible binary artifacts. Keep the small policy JSON.
+outputs/models/*.joblib
+outputs/models/*.pt
+outputs/models/*.pth
+outputs/models/*.ckpt
+outputs/models/*.onnx
+
+# Generated predictions contain row-level data/scores and can be regenerated.
+outputs/predictions/
+
+# Legacy/generated visualizations are not the current evidence package. Current
+# audit figures under outputs/reports/ remain tracked.
+outputs/figures/
+outputs/archive/
+
+# Local runtime logs can contain paths and are fully regenerable.
+*.log
+
+# Confidential input data: keep only the directory placeholder in Git.
+/input/*
+!/input/.gitkeep
+/input/*.csv
+
+# Local secrets and credentials.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# IDE & OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

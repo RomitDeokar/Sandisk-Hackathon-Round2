@@ -1,0 +1,62 @@
+{
+  "models_retrained": false,
+  "sample_definition": "all eligible test failures plus 1000 wafer-stratified eligible passes",
+  "sample_rows": 2380,
+  "sample_failures": 1380,
+  "sample_passes": 1000,
+  "representative_spatial_wafer": "W_N_0015",
+  "top_features": [
+    "wafer_old_fail_rate",
+    "wafer_old_fail_count",
+    "spatial_radial_dist",
+    "feature_272",
+    "wafer_die_density",
+    "feature_480",
+    "feature_243",
+    "feature_242",
+    "feature_33",
+    "feature_282",
+    "feature_245",
+    "wafer_die_count",
+    "feature_183",
+    "feature_246",
+    "feature_284",
+    "feature_58",
+    "feature_60",
+    "feature_109",
+    "feature_85",
+    "feature_325"
+  ],
+  "spatial_features": [
+    "spatial_row_norm",
+    "spatial_col_norm",
+    "spatial_radial_dist",
+    "spatial_radial_dist_sq",
+    "spatial_top_edge_dist",
+    "spatial_bottom_edge_dist",
+    "spatial_left_edge_dist",
+    "spatial_right_edge_dist",
+    "spatial_min_edge_dist",
+    "spatial_neigh_valid_count_3x3",
+    "spatial_neigh_old_fail_count_3x3",
+    "spatial_neigh_old_fail_density_3x3",
+    "spatial_neigh_valid_count_5x5",
+    "spatial_neigh_old_fail_count_5x5",
+    "spatial_neigh_old_fail_density_5x5",
+    "spatial_neigh_valid_count_7x7",
+    "spatial_neigh_old_fail_count_7x7",
+    "spatial_neigh_old_fail_density_7x7",
+    "spatial_nearest_old_fail_dist"
+  ],
+  "model_artifact_sha256": {
+    "model_a.joblib": "410bfdcf2cd1b200eecbd68df42de4a04415ad707598bc91e5bdd46738324130",
+    "model_b_cnn.joblib": "474e4a98cdf4389e1768565c523cb4eb9c13c3b99566db79a6935b7557819b28",
+    "feature_pipeline.joblib": "28dfd922d828ca87ec4952ab01e3147c5af9d58cad6646c84e3e213b18eb6d97"
+  },
+  "submission_policy": {
+    "threshold_objective": "cost_weighted",
+    "fn_fp_cost_ratio": 8.0,
+    "ensemble_mode": "none"
+  },
+  "interpretation_note": "LightGBM native TreeSHAP values are log-odds contributions; CNN attention is learned attention, not a causal attribution."
+}

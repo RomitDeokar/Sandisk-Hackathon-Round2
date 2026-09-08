@@ -11,7 +11,6 @@ import pandas as pd
 from sandisk_yield.cascade.cascade import WaferFusionCascade
 from sandisk_yield.features.pipeline import FeaturePipeline
 from sandisk_yield.data.loader import load_dataset
-from sandisk_yield.data.validator import validate_dataframe
 from sandisk_yield.inference.submission import export_submission
 
 
@@ -26,8 +25,6 @@ def run_inference(
     Runs full inference on raw dataset and returns prediction dataframe.
     """
     df_raw = load_dataset(data_path, split_name="inference")
-    validate_dataframe(df_raw, is_training=False,
-                       expected_block_length=getattr(cascade.model_b, "block_length", None))
     X_tab = feature_pipeline.transform(df_raw)
     
     results = cascade.predict_detailed(

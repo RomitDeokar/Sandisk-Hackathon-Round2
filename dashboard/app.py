@@ -31,7 +31,7 @@ if oof_path.exists():
     oof_preview = load_oof(str(oof_path), oof_path.stat().st_mtime_ns)
     operating, overlap, _ = analyze_oof(oof_preview, ratio)
     st.dataframe(operating[["model", "objective", "threshold", "TP", "FN", "FP", "TN",
-                            "recall", "precision", "f1", "weighted_cost"]], use_container_width=True)
+                            "recall", "precision", "f1", "weighted_cost"]], width="stretch")
     preview_models = operating.model.unique().tolist()
     default_model = preview_models.index("Model B (cnn)") if "Model B (cnn)" in preview_models else 0
     selected_preview = st.selectbox("Confusion matrix model", preview_models, index=default_model)
@@ -76,6 +76,8 @@ if policy_columns.issubset(df.columns):
         "Model A": float(selected_policy["threshold_a"]),
         "Model B (cnn)": float(selected_policy["threshold_b"]),
     })
+    st.caption("Final policy: Model B (cnn) cascade, Cost 8:1, no ensemble. "
+               "Because candidate ratios were inspected on test.csv, test metrics are confirmatory rather than an untouched final evaluation.")
 else:
     st.warning("Saved predictions do not contain operating-policy metadata.")
 # Predictions already contain the appropriate A/B OOF-tuned decision. Never
@@ -161,7 +163,10 @@ with tab5:
         comp_df = pd.read_csv(comp_path)
         comp_df = comp_df[(comp_df["objective"] == "cost_weighted") &
                           (comp_df["fn_fp_cost_ratio"] == 8.0)].copy()
-        st.dataframe(comp_df, use_container_width=True)
+        st.dataframe(comp_df, width="stretch")
+        st.download_button("Download Cost 8:1 comparison CSV", comp_df.to_csv(index=False),
+                           file_name="operating_point_comparison_cost8.csv",
+                           mime="text/csv")
     else:
         st.info("Run evaluation script to populate comparison table.")
 
@@ -196,7 +201,7 @@ with tab6:
         st.dataframe(pd.DataFrame({"feature": spatial_columns,
                                   "SHAP contribution": spatial_die[spatial_columns].astype(float).values})
                      .sort_values("SHAP contribution", key=abs, ascending=False),
-                     use_container_width=True)
+                     width="stretch")
         wafer_spatial = spatial_df[spatial_df.wafer_id == key[0]]
         color_limit = float(np.quantile(np.abs(wafer_spatial.spatial_total_shap), 0.98)) or 1.0
         spatial_fig, spatial_ax = plt.subplots(figsize=(6, 5), dpi=120)
@@ -226,10 +231,17 @@ with tab6:
             st.bar_chart(regions.set_index("block_region")["attention_weight"])
             st.dataframe(regions[["attention_rank", "block_start", "block_end",
                                   "attention_weight", "mean_signal", "max_signal"]],
-                         use_container_width=True)
+                         width="stretch")
             st.caption("Attention identifies regions emphasized by the encoder; it is not a causal attribution.")
         else:
             st.info("This die was resolved by Model A and was not routed to Model B in the saved cascade.")
+        download_left, download_right = st.columns(2)
+        download_left.download_button(
+            "Download per-die Model A SHAP", shap_path.read_bytes(),
+            file_name=shap_path.name, mime="text/csv")
+        download_right.download_button(
+            "Download current CNN attention report", block_path.read_bytes(),
+            file_name=block_path.name, mime="text/csv")
     else:
         st.info("Run `python scripts/generate_analysis_deliverables.py` to create current-model explanations.")
 
@@ -247,6 +259,8 @@ with tab7:
         right.image(str(calibration_path), caption="OOF reliability curves")
         st.subheader("Top-20 Model A feature distribution overlap")
         st.caption("0 means separated class histograms; 1 means complete overlap.")
-        st.dataframe(pd.read_csv(overlap_path), use_container_width=True)
+        st.dataframe(pd.read_csv(overlap_path), width="stretch")
+        st.download_button("Download imbalance report", summary_path.read_bytes(),
+                           file_name=summary_path.name, mime="text/markdown")
     else:
         st.info("Run `python scripts/generate_analysis_deliverables.py` to create the analysis.")

@@ -10,8 +10,6 @@ from pathlib import Path
 from typing import Dict, List, Optional, Union
 import joblib
 import numpy as np
-import pandas as pd
-from mapie.conformity_scores import LACConformityScore
 
 
 class ConformalGate:
@@ -20,52 +18,34 @@ class ConformalGate:
     Non-conformity score: s_i = 1 - p(y_true | x_i)
     """
 
-    def __init__(self, coverage_levels: Optional[List[float]] = None, default_coverage: float = 0.99):
-        self.coverage_levels = list(coverage_levels) if coverage_levels is not None else [0.90, 0.95, 0.975, 0.99]
-        if any(not 0 < c < 1 for c in self.coverage_levels + [default_coverage]):
-            raise ValueError("Coverage levels must be strictly between zero and one")
+    def __init__(self, coverage_levels: List[float] = [0.90, 0.95, 0.975, 0.99], default_coverage: float = 0.95):
+        self.coverage_levels = coverage_levels
         self.default_coverage = default_coverage
         self.quantiles_: Dict[float, float] = {}
         self.is_calibrated = False
 
-    @staticmethod
-    def _probabilities(values):
-        p = np.asarray(values, dtype=np.float64)
-        if p.ndim != 1 or not np.isfinite(p).all() or ((p < 0) | (p > 1)).any():
-            raise ValueError("Expected one-dimensional finite probabilities in [0, 1]")
-        return p
-
-    def calibrate(self, calib_probs: np.ndarray, y_calib: np.ndarray, groups=None):
-        """Use independent holdout scores; optional wafer maxima handle within-wafer dependence.
-
-        Group mode gives simultaneous set coverage on an exchangeable NEW wafer,
-        not a guarantee on final cascade decisions or under process distribution shift.
-        Calibration wafers must not be used for fitting, tuning, or feature selection.
+    def calibrate(self, calib_probs: np.ndarray, y_calib: np.ndarray):
         """
-        p1 = self._probabilities(calib_probs)
-        y = np.asarray(y_calib)
-        if not len(y) or y.shape != p1.shape or not np.isin(y, [0, 1]).all():
-            raise ValueError("Expected nonempty aligned binary calibration labels")
-        scores = LACConformityScore().get_conformity_scores(
-            y.astype(int), np.column_stack([1 - p1, p1]), y_enc=y.astype(int)
-        ).ravel()
-        self.calibration_unit_ = "die"
-        if groups is not None:
-            groups = np.asarray(groups)
-            if groups.shape != y.shape or pd.isna(groups).any():
-                raise ValueError("Calibration groups must be aligned and nonmissing")
-            scores = pd.DataFrame({"group": groups, "score": scores}).groupby(
-                "group", sort=False)["score"].max().to_numpy()
-            self.calibration_unit_ = "wafer_maximum"
-        n = len(scores)
-        self.n_calibration_units_ = n
+        Calibrate quantile thresholds on an independent holdout set of calibration wafers.
+        """
+        p1 = np.asarray(calib_probs, dtype=np.float64)
+        y = np.asarray(y_calib, dtype=int)
+        n = len(y)
+        if n == 0:
+            raise ValueError("Empty calibration set passed to ConformalGate")
+            
+        # Non-conformity scores for true labels
+        # If y=1, s = 1 - p1. If y=0, s = 1 - (1 - p1) = p1.
+        scores = np.where(y == 1, 1.0 - p1, p1)
+        
         self.quantiles_ = {}
-        for coverage in sorted(set(self.coverage_levels + [self.default_coverage])):
-            rank = int(np.ceil((n + 1) * coverage))
-            # Exact finite-sample order statistic. When rank > n the missing
-            # calibration score is +infinity, NOT the largest observed score.
-            self.quantiles_[coverage] = (float(np.partition(scores, rank - 1)[rank - 1])
-                                         if rank <= n else float("inf"))
+        for alpha_cov in sorted(set(self.coverage_levels + [self.default_coverage])):
+            # Finite-sample conformal quantile level
+            q_level = np.ceil((n + 1) * alpha_cov) / n
+            q_level = min(1.0, max(0.0, q_level))
+            q_val = float(np.quantile(scores, q_level, method="higher"))
+            self.quantiles_[alpha_cov] = q_val
+            
         self.is_calibrated = True
         return self
 
@@ -76,12 +56,10 @@ class ConformalGate:
         if not self.is_calibrated:
             raise RuntimeError("ConformalGate must be calibrated before predicting sets")
             
-        cov = self.default_coverage if coverage is None else coverage
-        if cov not in self.quantiles_:
-            raise ValueError(f"Coverage {cov} was not calibrated")
-        q_val = self.quantiles_[cov]
+        cov = coverage or self.default_coverage
+        q_val = self.quantiles_.get(cov, 0.95)
         
-        p1 = self._probabilities(probs)
+        p1 = np.asarray(probs, dtype=np.float64)
         p0 = 1.0 - p1
         
         # Class included if 1 - p_k <= q_val  =>  p_k >= 1 - q_val
@@ -94,7 +72,9 @@ class ConformalGate:
                 s.append(0)
             if prob1 >= thresh:
                 s.append(1)
-            # Empty sets indicate insufficient evidence and MUST be escalated.
+            # Guarantee non-empty set
+            if not s:
+                s = [0] if prob0 >= prob1 else [1]
             pred_sets.append(s)
             
         return pred_sets

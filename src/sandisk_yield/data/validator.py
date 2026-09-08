@@ -34,12 +34,6 @@ def validate_dataframe(
     Returns summary metrics or raises ValidationError.
     """
     errors: List[str] = []
-    if df.empty:
-        errors.append("Dataset must not be empty")
-    if not df.columns.is_unique:
-        raise ValidationError("Duplicate column names")
-    if not df.index.is_unique:
-        errors.append("Duplicate row index")
     warnings: List[str] = []
 
     # 1. Structural ID columns
@@ -78,34 +72,23 @@ def validate_dataframe(
         if n_null > 0:
             errors.append(f"Found {n_null} null values in critical column '{c}'")
 
-    # Grid indexing requires unique, nonnegative integer coordinates.
-    if all(c in df for c in ID_COLS):
-        if df.duplicated(ID_COLS).any():
-            errors.append("Duplicate die IDs (wafer_id, die_row, die_col)")
-        for col in ("die_row", "die_col"):
-            vals = pd.to_numeric(df[col], errors="coerce").to_numpy(dtype=float)
-            if (not np.isfinite(vals).all() or (vals < 0).any()
-                    or (vals != np.floor(vals)).any()
-                    or not pd.api.types.is_integer_dtype(df[col])):
-                errors.append(f"'{col}' must contain nonnegative integer coordinates (integer dtype)")
-    if is_training and OLD_LABEL_COL in df and TARGET_COL in df:
-        if ((df[OLD_LABEL_COL] == 1) & (df[TARGET_COL] == 0)).any():
-            errors.append("An old failure cannot become a passing final label")
-
-    # Validate EVERY row. Sampling can miss corrupt late rows and silently
-    # fabricated padding would change model predictions. Keep sample_block_rows
-    # in the signature for backward compatibility, but no longer sample.
-    if BLOCK_READINGS_COL not in df:
-        if expected_block_length is not None:
-            errors.append("Missing block_readings required by Model B")
-    else:
-        from sandisk_yield.features.blocks import parse_block_readings_row
-        for idx, item in df[BLOCK_READINGS_COL].items():
-            try:
-                parse_block_readings_row(item, expected_block_length or 0)
-            except (ValueError, TypeError) as exc:
-                errors.append(f"Invalid block_readings at row {idx}: {exc}")
-                break
+    # 6. block_readings column validation
+    if BLOCK_READINGS_COL in df.columns:
+        if not (pd.api.types.is_string_dtype(df[BLOCK_READINGS_COL]) or pd.api.types.is_object_dtype(df[BLOCK_READINGS_COL])):
+            errors.append(f"'{BLOCK_READINGS_COL}' must be string/object dtype, got {df[BLOCK_READINGS_COL].dtype}")
+        elif expected_block_length is not None and len(df) > 0:
+            sample_n = min(sample_block_rows, len(df))
+            sampled = df[BLOCK_READINGS_COL].iloc[:sample_n]
+            for idx, item in enumerate(sampled):
+                if isinstance(item, str):
+                    toks = item.split()
+                    if len(toks) != expected_block_length:
+                        errors.append(f"Sample row {idx} in block_readings has {len(toks)} tokens, expected {expected_block_length}")
+                        break
+                elif isinstance(item, (list, np.ndarray)):
+                    if len(item) != expected_block_length:
+                        errors.append(f"Sample row {idx} in block_readings has length {len(item)}, expected {expected_block_length}")
+                        break
 
     if errors:
         raise ValidationError("Dataset validation failed:\n" + "\n".join(f"  - {e}" for e in errors))

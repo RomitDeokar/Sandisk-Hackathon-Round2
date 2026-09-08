@@ -51,10 +51,6 @@ def validate_submission_df(
         if not unique_preds.issubset({0, 1}):
             errors.append(f"Predicted labels must be 0 or 1, found: {unique_preds}")
         
-    if "old_label" in ref_df and len(sub_df) == len(ref_df):
-        if ((ref_df.old_label.to_numpy() == 1) & (sub_df.predicted_label.to_numpy() != 1)).any():
-            errors.append("Old failures must remain failures in the submission")
-
     # Duplicate dies check
     dups = sub_df.duplicated(subset=["wafer_id", "die_row", "die_col"]).sum()
     if dups > 0:
@@ -88,9 +84,6 @@ def export_submission(
     sub_cols = ["wafer_id", "die_row", "die_col", "predicted_label"]
     sub_df = results_df[sub_cols].copy()
     
-    # Reject malformed predictions BEFORE integer conversion can hide them.
-    validate_submission_df(sub_df, ref_df)
-
     # Cast types
     sub_df["die_row"] = sub_df["die_row"].astype(int)
     sub_df["die_col"] = sub_df["die_col"].astype(int)

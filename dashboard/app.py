@@ -179,6 +179,35 @@ with tab6:
         shap_df = pd.read_csv(shap_path)
         spatial_df = pd.read_csv(spatial_path)
         block_df = pd.read_csv(block_path)
+
+        # Interpretability artifacts and the prediction artifact can come from
+        # different pipeline runs. Only dies present in every artifact can be
+        # explained, so restrict the selector to that intersection instead of
+        # letting a later positional lookup fail.
+        die_key = ["wafer_id", "die_row", "die_col"]
+        explainable_keys = (
+            shap_df[die_key]
+            .merge(spatial_df[die_key], on=die_key)
+            .merge(df[die_key], on=die_key)
+            .drop_duplicates()
+        )
+        shap_df = shap_df.merge(explainable_keys, on=die_key).reset_index(drop=True)
+
+        if shap_df.empty:
+            st.warning(
+                "The saved interpretability reports and the saved predictions come from "
+                "different pipeline runs, so no die appears in both. Re-run "
+                "`python scripts/generate_analysis_deliverables.py` to regenerate "
+                "explanations for the current predictions."
+            )
+            st.stop()
+
+        if len(shap_df) < len(explanation_source := pd.read_csv(shap_path)):
+            st.caption(
+                f"Showing {len(shap_df):,} of {len(explanation_source):,} explained dies — "
+                "only dies also present in the current prediction artifact can be displayed."
+            )
+
         explanation_ids = shap_df.apply(
             lambda row: f"{row.wafer_id} / r{int(row.die_row)} / c{int(row.die_col)}", axis=1)
         selected_die = st.selectbox("Select explained die", explanation_ids, key="interpret_die")
@@ -226,13 +255,17 @@ with tab6:
             regions = block_df[(block_df.wafer_id == key[0]) &
                                (block_df.die_row == key[1]) &
                                (block_df.die_col == key[2])].copy()
-            regions["block_region"] = regions.apply(
-                lambda row: f"{int(row.block_start)}–{int(row.block_end)}", axis=1)
-            st.bar_chart(regions.set_index("block_region")["attention_weight"])
-            st.dataframe(regions[["attention_rank", "block_start", "block_end",
-                                  "attention_weight", "mean_signal", "max_signal"]],
-                         width="stretch")
-            st.caption("Attention identifies regions emphasized by the encoder; it is not a causal attribution.")
+            if regions.empty:
+                st.info("This die was routed to Model B, but the saved attention report "
+                        "contains no block regions for it.")
+            else:
+                regions["block_region"] = regions.apply(
+                    lambda row: f"{int(row.block_start)}–{int(row.block_end)}", axis=1)
+                st.bar_chart(regions.set_index("block_region")["attention_weight"])
+                st.dataframe(regions[["attention_rank", "block_start", "block_end",
+                                      "attention_weight", "mean_signal", "max_signal"]],
+                             width="stretch")
+                st.caption("Attention identifies regions emphasized by the encoder; it is not a causal attribution.")
         else:
             st.info("This die was resolved by Model A and was not routed to Model B in the saved cascade.")
         download_left, download_right = st.columns(2)

@@ -64,10 +64,6 @@ class WaferFusionCascade:
           - final_probability
           - predicted_label
         """
-        if mode not in {"cascade", "full_model_b"}:
-            raise ValueError("Unknown inference mode")
-        if mode == "full_model_b" and self.model_b is None:
-            raise ValueError("full_model_b mode requires a fitted Model B")
         assert_row_alignment(df_raw, X_tab)
         assert_feature_alignment(self.model_a.feature_names_, X_tab.columns)
         n = len(df_raw)
@@ -77,9 +73,9 @@ class WaferFusionCascade:
         eligible_mask = create_eligible_mask(df_raw).values
         
         # Initialize output arrays
-        p_a_calib = np.zeros(n, dtype=np.float64)
-        p_b_calib = np.full(n, np.nan, dtype=np.float64)
-        final_probs = np.zeros(n, dtype=np.float64)
+        p_a_calib = np.zeros(n, dtype=np.float32)
+        p_b_calib = np.full(n, np.nan, dtype=np.float32)
+        final_probs = np.zeros(n, dtype=np.float32)
         uncertainty_states = np.full(n, "OLD_FAILURE", dtype=object)
         routed_to_b = np.zeros(n, dtype=bool)
         
@@ -110,11 +106,7 @@ class WaferFusionCascade:
                     spatial_features=X_tab_elig,
                     threshold=self.threshold
                 )
-            # A tuned threshold can disagree with a singleton set. Never
-            # bypass Model B while making the opposite conformal decision.
-            to_route |= ((conf_states == "CONFIDENT_PASS") & (cal_p_a >= self.threshold))
-            to_route |= ((conf_states == "CONFIDENT_FAIL") & (cal_p_a < self.threshold))
-            routed_to_b[elig_indices] = to_route & (self.model_b is not None)
+            routed_to_b[elig_indices] = to_route
             
             # Dies resolved purely by Model A
             resolved_by_a_mask = ~to_route
@@ -125,13 +117,12 @@ class WaferFusionCascade:
             # Dies routed to Model B
             if to_route.sum() > 0 and self.model_b is not None:
                 routed_orig_idx = elig_indices[to_route]
-                X_tab_routed = X_tab_elig.iloc[to_route]
+                X_tab_routed = X_tab_elig.iloc[to_route].values
                 block_strings = df_raw["block_readings"].iloc[routed_orig_idx].tolist()
                 
                 # Compute block features for routed batch
                 df_routed_raw = df_raw.iloc[routed_orig_idx]
-                X_blk_feats = (None if hasattr(self.model_b, "block_features") else
-                    compute_block_features_df(df_routed_raw, expected_len=self.model_b.block_length).values)
+                X_blk_feats = compute_block_features_df(df_routed_raw, expected_len=self.model_b.block_length).values
                 
                 # Model B inference
                 raw_p_b = self.model_b.predict_proba(

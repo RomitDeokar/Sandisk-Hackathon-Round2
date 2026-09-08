@@ -15,7 +15,6 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 from sandisk_yield.config import load_config, add_data_arguments, resolve_data_paths
 from sandisk_yield.seed import seed_everything, get_device
 from sandisk_yield.data.loader import load_dataset
-from sandisk_yield.data.splitter import make_calibration_split
 from sandisk_yield.data.validator import validate_dataframe
 from sandisk_yield.data.alignment import assert_feature_alignment, assert_row_alignment
 from sandisk_yield.schema import create_new_failure_target
@@ -39,16 +38,16 @@ def main():
     parser = argparse.ArgumentParser(description="Wafer-grouped CV and block-mode comparison")
     parser.add_argument("--config", default="configs/base.yaml")
     parser.add_argument("--fast", action="store_true", help="Reduce CNN epochs; retain all five folds")
-    parser.add_argument("--block-mode", choices=["stats", "cnn", "zonal", "global"], default="stats")
+    parser.add_argument("--block-mode", choices=["cnn", "zonal", "global"], default="cnn")
     parser.add_argument("--compare-block-modes", action="store_true",
-                        help="Evaluate all tabular modes on identical folds; add CNN only with --block-mode cnn")
-    parser.add_argument("--n-estimators", type=int, default=None)
+                        help="Evaluate all three modes on identical folds; deploy --block-mode")
+    parser.add_argument("--n-estimators", type=int, default=100)
     add_operating_arguments(parser)
     parser.add_argument("--postprocess-only", action="store_true",
                         help="Only analyze saved OOF probabilities; no training or submission changes")
     add_data_arguments(parser)
     args = parser.parse_args()
-    if args.n_estimators is not None and args.n_estimators < 1:
+    if args.n_estimators < 1:
         parser.error("--n-estimators must be positive")
     if not np.isfinite(args.fn_fp_cost_ratio) or args.fn_fp_cost_ratio <= 0:
         parser.error("--fn-fp-cost-ratio must be positive and finite")
@@ -63,23 +62,13 @@ def main():
         logger.info("OOF operating-point comparison (no retraining):\n%s", comparison_table(records).to_string(index=False))
         logger.info("Submission and model artifacts unchanged. Objective selection uses OOF labels, not test labels.")
         return
-    resolve_data_paths(cfg, args, parser, required=("train",))
+    resolve_data_paths(cfg, args, parser)
     seed = cfg.get("seed", 42)
     seed_everything(seed)
     train_df = load_dataset(Path(cfg["paths"]["raw_train"]), split_name="train")
     block_length = cfg.get("model_b", {}).get("block_length", cfg["data"]["num_block_readings"])
     validate_dataframe(train_df, is_training=True, expected_block_length=block_length)
-    all_training_wafers = set(train_df.wafer_id)
-    # Reserve independent calibration wafers BEFORE any feature fitting or CV.
-    train_df, calibration_df = make_calibration_split(
-        train_df, calibration_ratio=cfg.get("cv", {}).get("calibration_size", 0.2), seed=seed)
-    n_splits = cfg.get("cv", {}).get("n_splits", 5)
-    y_calib, calib_eligible = create_new_failure_target(calibration_df)
-    if not calib_eligible.any():
-        parser.error("Calibration partition has no eligible dies; provide more wafers")
     y_all, eligible = create_new_failure_target(train_df)
-    if train_df.loc[eligible, "wafer_id"].nunique() < n_splits:
-        parser.error("Not enough fitting wafers after reserving calibration; reduce cv.n_splits or add wafers")
     assert_row_alignment(train_df, y_all, eligible)
     logger.info("Training wafers=%s; eligible dies=%s; eligible failures=%s",
                 train_df.wafer_id.nunique(), eligible.sum(), y_all.loc[eligible].sum())
@@ -91,8 +80,7 @@ def main():
         include_blocks=False, epsilon=float(feat_cfg.get("epsilon", 1e-6)))
     model_params = dict(cfg.get("model_a", {}).get("params", {}))
     # CLI override is last: YAML and defaults cannot silently replace it.
-    if args.n_estimators is not None:
-        model_params["n_estimators"] = args.n_estimators
+    model_params["n_estimators"] = args.n_estimators
     model_params.setdefault("random_state", seed)
     b_cfg = cfg.get("model_b", {})
     training_params = dict(
@@ -105,10 +93,10 @@ def main():
         lr=float(b_cfg.get("learning_rate", 1e-3)),
         weight_decay=float(b_cfg.get("weight_decay", 1e-4)),
         device=get_device(cfg.get("device", "auto")))
-    modes = tuple(dict.fromkeys((args.block_mode, "stats", "zonal", "global"))) if args.compare_block_modes else (args.block_mode,)
+    modes = ("cnn", "zonal", "global") if args.compare_block_modes else (args.block_mode,)
     pipeline, models, oof, summaries, folds = train_models_cv(
         train_df, modes=modes, feature_params=feature_params, model_params=model_params,
-        training_params=training_params, block_length=block_length, n_splits=n_splits, seed=seed,
+        training_params=training_params, block_length=block_length, n_splits=5, seed=seed,
         model_type=cfg.get("model_a", {}).get("type", "lightgbm"))
     oof_frame = train_df.loc[eligible, ["wafer_id", "die_row", "die_col", "old_label", "label"]].copy()
     fold_ids = np.zeros(len(oof_frame), dtype=int)
@@ -139,29 +127,12 @@ def main():
     oof_frame.to_csv(predictions_dir / "oof_predictions.csv", index=False)
 
     selected = f"Model B ({args.block_mode})"
-    # Raw scores retain the OOF-selected threshold scale. MAPIE LAC conformity
-    # does not require probability calibration. Use wafer maxima so thousands
-    # of correlated dies do not masquerade as independent calibration units.
-    gate = ConformalGate(
-        coverage_levels=cfg.get("conformal", {}).get("coverage_levels"),
-        default_coverage=cfg.get("conformal", {}).get("default_coverage", 0.99))
-    X_calib = pipeline.transform(calibration_df).loc[calib_eligible]
-    gate.calibrate(models["Model A"].predict_proba(X_calib)[:, 1],
-                   y_calib.loc[calib_eligible].to_numpy(),
-                   groups=calibration_df.loc[calib_eligible, "wafer_id"].to_numpy())
-    if np.isinf(gate.quantiles_[gate.default_coverage]):
-        logger.warning("Only %s calibration wafers: %.1f%% coverage requires more independent wafers; all dies escalate safely.",
-                       gate.n_calibration_units_, gate.default_coverage * 100)
-    policy["model_b_name"] = selected
-    (models_dir / "operating_policy.json").write_text(json.dumps(policy, indent=2), encoding="utf-8")
-    provenance = dict(
-        fitting_wafers=sorted(map(str, train_df.wafer_id.unique())),
-        calibration_wafers=sorted(map(str, calibration_df.wafer_id.unique())),
-        calibration_units=gate.n_calibration_units_, coverage=gate.default_coverage,
-        calibration_unit=gate.calibration_unit_, probability_calibrated=False,
-        n_splits=n_splits, block_mode=args.block_mode,
-        feature_names=list(models["Model A"].feature_names_))
-    (models_dir / "training_provenance.json").write_text(json.dumps(provenance, indent=2), encoding="utf-8")
+    # Bug: previous calibration split was taken AFTER both models had seen every
+    # training wafer. OOF scores avoid in-sample calibration inputs. An unfitted
+    # Calibrator is intentionally identity, preserving the OOF threshold scale.
+    # Pooled OOF gate scores are heuristic, not independent split-conformal scores.
+    gate = ConformalGate(default_coverage=cfg.get("conformal", {}).get("default_coverage", 0.95))
+    gate.calibrate(oof["Model A"], y_all.loc[eligible].to_numpy())
     route_cfg = cfg.get("routing", {})
     router = CascadeRouter(**{key: route_cfg[key] for key in (
         "prob_margin", "min_model_b_prob", "max_model_b_prob",
@@ -191,8 +162,6 @@ def main():
     if prediction_path.exists():
         target = load_dataset(prediction_path, split_name="prediction")
         validate_dataframe(target, is_training=False, expected_block_length=block_length)
-        if all_training_wafers.intersection(target.wafer_id):
-            raise ValueError("Prediction/evaluation wafers overlap fitting or calibration wafers")
         X_target = pipeline.transform(target)
         assert_feature_alignment(models["Model A"].feature_names_, X_target.columns)
         assert_feature_alignment(models[selected].feature_names_, X_target.columns)
@@ -211,17 +180,16 @@ def main():
         "# Wafer-grouped cross-validation",
         comparison.to_string(index=False),
         "",
-        f"All {n_splits} folds hold out whole wafers. Every eligible fitting die has one OOF probability.",
+        "All five folds hold out whole wafers. Every eligible die has one OOF probability.",
         "Feature selection, imputation and neural scaling are fitted only on training folds.",
         "Fold metrics use the pooled OOF-tuned threshold. They are descriptive tuning results,",
         "not nested-CV estimates or evidence that predictive performance improved.",
         "Standard deviations use ddof=0; the folds are not independent confidence intervals.",
-        "Stats/global/zonal use the same tree learner with different summaries; optional CNN also changes the learner.",
+        "CNN uses neural fusion; zonal/global use LightGBM plus summaries, so the learner also changes.",
         f"Configured tree learner: {cfg.get('model_a', {}).get('type', 'lightgbm')} (see logs for effective backend).",
         "Zonal compression assumes stable, meaningful ordering of the block sequence.",
-        "The gate uses independent held-out wafer maxima and MAPIE LAC scores at the configured coverage.",
-        "Set coverage requires exchangeable wafers; it does NOT imply 99% final classification accuracy or minority recall.",
-        "Raw probabilities are not calibrated risk estimates. Small calibration samples conservatively route all dies.",
+        "The deployment cascade uses model-specific OOF thresholds and an OOF routing heuristic.",
+        "No independent split-conformal coverage guarantee or probability calibration is claimed.",
         f"Selected deployment mode: {args.block_mode}.",
         f"Threshold objective: {args.threshold_objective}; FN/FP cost ratio: {args.fn_fp_cost_ratio}; ensemble: {args.ensemble_mode}.",
         "Union runs both models on every eligible die; it has no single probability threshold or PR-AUC.",

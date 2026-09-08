@@ -46,18 +46,12 @@ def load_dataset(
     else:
         raise ValueError(f"Unsupported format '{ext}'. Expected .csv, .tsv, .parquet, or .pkl")
 
-    # Validate before conversion: astype(int) silently truncates 0.9 labels
-    # and fractional coordinates, hiding corruption from downstream checks.
-    for col in ["die_row", "die_col", OLD_LABEL_COL, TARGET_COL]:
+    # Cast integer identifiers and labels if present
+    for col in ["die_row", "die_col", OLD_LABEL_COL]:
         if col in df.columns:
-            values = pd.to_numeric(df[col], errors="raise").to_numpy(dtype=float)
-            if not np.isfinite(values).all() or (values != np.floor(values)).any():
-                raise ValueError(f"'{col}' must contain finite integer values")
-            if col in (OLD_LABEL_COL, TARGET_COL) and not np.isin(values, [0, 1]).all():
-                raise ValueError(f"'{col}' must contain only binary labels")
-            if (values < 0).any() or (values >= float(np.iinfo(np.int64).max)).any():
-                raise ValueError(f"'{col}' contains out-of-range integers")
-            df[col] = values.astype(np.int64)
+            df[col] = df[col].astype(int)
+    if TARGET_COL in df.columns:
+        df[TARGET_COL] = df[TARGET_COL].astype(int)
 
     # Compute diagnostics
     feature_cols = detect_feature_cols(df)

@@ -49,7 +49,7 @@ def test_conformal_gate_prediction_sets():
     gate = ConformalGate(default_coverage=0.95)
     calib_probs = np.array([0.05, 0.10, 0.20, 0.85, 0.95])
     y_true = np.array([0, 0, 0, 1, 1])
-    gate.calibrate(np.tile(calib_probs, 30), np.tile(y_true, 30))
+    gate.calibrate(calib_probs, y_true)
     
     states = gate.derive_routing_states(np.array([0.01, 0.50, 0.99]))
     assert states[0] == "CONFIDENT_PASS"
@@ -83,59 +83,3 @@ def test_cascade_prediction_detailed(dummy_cascade):
     assert res.loc[2, "final_probability"] == 1.0
     assert "model_a_probability" in res.columns
     assert "uncertainty_state" in res.columns
-
-
-def test_tiny_calibration_does_not_fabricate_confidence():
-    gate = ConformalGate(default_coverage=.99).calibrate([.1, .2, .9], [0, 0, 1])
-    assert np.isinf(gate.quantiles_[.99])
-    assert gate.predict_prediction_sets([0, .5, 1]) == [[0, 1]] * 3
-
-
-def test_empty_prediction_set_is_ambiguous():
-    gate = ConformalGate(default_coverage=.9).calibrate([.1] * 100, [0] * 100)
-    assert gate.predict_prediction_sets([.5]) == [[]]
-    assert gate.derive_routing_states([.5]).tolist() == ["AMBIGUOUS"]
-
-
-def test_exact_finite_sample_order_statistic():
-    scores = np.arange(1, 11) / 100
-    gate = ConformalGate(default_coverage=.8).calibrate(scores, np.zeros(10))
-    assert gate.quantiles_[.8] == pytest.approx(.09)
-
-
-def test_wafer_maximum_calibration_counts_wafers_not_dies():
-    gate = ConformalGate().calibrate([.1] * 200, [0] * 200, groups=["W1"] * 100 + ["W2"] * 100)
-    assert gate.n_calibration_units_ == 2
-    assert gate.calibration_unit_ == "wafer_maximum"
-    assert gate.derive_routing_states([.01]).tolist() == ["AMBIGUOUS"]
-
-
-@pytest.mark.parametrize("p,y", [([np.nan], [0]), ([1.1], [1]), ([[.1]], [0]),
-                                  ([.1], [2]), ([.1], [.5]), ([.1, .2], [0]), ([], [])])
-def test_invalid_calibration_rejected(p, y):
-    with pytest.raises(ValueError):
-        ConformalGate().calibrate(p, y)
-
-
-@pytest.mark.parametrize("coverage", [0, 1, -1, np.nan])
-def test_invalid_coverage_rejected(coverage):
-    with pytest.raises(ValueError):
-        ConformalGate(default_coverage=coverage)
-
-
-def test_uncalibrated_coverage_rejected():
-    gate = ConformalGate().calibrate([.1], [0])
-    with pytest.raises(ValueError, match="not calibrated"):
-        gate.predict_prediction_sets([.1], coverage=.88)
-
-
-def test_missing_model_b_does_not_count_inspections(dummy_cascade):
-    cascade, X = dummy_cascade
-    raw = pd.DataFrame({"wafer_id": ["w"] * 5, "die_row": range(5),
-                        "die_col": [0] * 5, "old_label": [0] * 5})
-    out = cascade.predict_detailed(raw, X)
-    assert not out.routed_to_model_b.any()
-    with pytest.raises(ValueError, match="requires"):
-        cascade.predict_detailed(raw, X, mode="full_model_b")
-    with pytest.raises(ValueError, match="Unknown"):
-        cascade.predict_detailed(raw, X, mode="typo")

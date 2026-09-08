@@ -59,3 +59,4 @@ outputs/archive/
 .idea/
 .DS_Store
 Thumbs.db
+logs/

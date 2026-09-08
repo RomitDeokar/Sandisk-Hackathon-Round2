@@ -1,5 +1,9 @@
 # WaferFusion-Cascade: SanDisk Die Yield Prediction System
 
+Live demo URLs
+Endpoint	URL	Status
+Cloudflare tunnel	https://routing-curve-attend-entrepreneurs.trycloudflare.com	HTTP 200
+Sandbox direct	https://8501-ieqeiibfgprmrjsh6ci3e-3c7ff1b5.sandbox.novita.ai	HTTP 200
 This project helps identify chip dies that passed an initial test but may still
 fail later. It combines each die's measurements, its position and neighbors on
 the wafer, and 2,000 block readings to flag potential failures for further
